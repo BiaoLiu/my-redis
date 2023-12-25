@@ -1,48 +1,43 @@
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use bytes::Bytes;
 use tokio::net::{TcpListener, TcpStream};
 use mini_redis::{Connection, Frame, client, Result, Command};
 
+type Db = Arc<Mutex<HashMap<String, Bytes>>>;
+
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    // let handle = tokio::spawn(async {
-    //     "hello_world".to_string()
-    // });
-    // let result = handle.await?;
-    // println!("{:?}", result);
+    let listener = TcpListener::bind("127.0.0.1:6379").await.unwrap();
 
-    let v = vec![1, 2, 3, 4, 5];
+    let db = Db::new(Mutex::new(HashMap::new()));
+    loop {
+        let (socket, _) = listener.accept().await.unwrap();
 
-    let handle = tokio::spawn(async {
-        println!("Here's a vec: {:?}", v);
-    });
-
-    let result = handle.await?;
-    println!("{:?}", result);
-    Ok(())
-    // let listener = TcpListener::bind("127.0.0.1:6379").await.unwrap();
-    //
-    // loop {
-    //     let (socket, _) = listener.accept().await.unwrap();
-    //
-    //     tokio::spawn(async move {
-    //         process(socket).await;
-    //     });
-    // }
+        let db = db.clone();
+        tokio::spawn(async move {
+            process(socket, db).await;
+        });
+    }
 }
 
-async fn process(socket: TcpStream) {
+
+async fn process(socket: TcpStream, db: Db) {
     let mut connection = Connection::new(socket);
-    let mut db = HashMap::new();
+    // let mut db = HashMap::new();
 
     if let Some(frame) = connection.read_frame().await.unwrap() {
         println!("GOT: {:?}", frame);
 
         let response = match Command::from_frame(frame).unwrap() {
             Command::Set(cmd) => {
-                db.insert(cmd.key().to_string(), cmd.value().to_vec());
+                let mut db = db.lock().unwrap();
+                db.insert(cmd.key().to_string(), cmd.value().clone());
                 Frame::Simple("OK".to_string())
             }
             Command::Get(cmd) => {
+                let db = db.lock().unwrap();
                 if let Some(value) = db.get(cmd.key()) {
                     Frame::Bulk(value.clone().into())
                 } else {
